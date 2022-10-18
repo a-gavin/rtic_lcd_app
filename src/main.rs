@@ -6,18 +6,15 @@
     dispatchers = [TIMER_IRQ_1]
 )]
 mod app {
-    use cortex_m::delay::Delay;
-    use embedded_hal::digital::v2::{OutputPin, ToggleableOutputPin};
-    use fugit::RateExtU32; // For .kHz() conversion funcs
-
     use rp_pico::XOSC_CRYSTAL_FREQ;
     use rp_pico::hal::{
         clocks,
         clocks::ClockSource,
         gpio,
-        gpio::pin::bank0::Gpio25,
+        gpio::pin::bank0::{Gpio2, Gpio3, Gpio25},
         gpio::pin::PushPullOutput,
         I2C,
+        pac,
         sio::Sio,
         watchdog::Watchdog
     };
@@ -25,6 +22,10 @@ mod app {
         Rp2040Monotonic,
         fugit::Duration,
     };
+
+    use cortex_m::delay::Delay;
+    use embedded_hal::digital::v2::{OutputPin, ToggleableOutputPin};
+    use fugit::RateExtU32; // For .kHz() conversion funcs
     use lcd_i2c::{Backlight, Lcd};
 
     use defmt::*;
@@ -37,6 +38,8 @@ mod app {
 
     const LCD_ADDRESS: u8 = 0x27;
 
+    type I2CBus = I2C<pac::I2C1, (gpio::Pin<Gpio2, gpio::FunctionI2C>, gpio::Pin<Gpio3, gpio::FunctionI2C>)>;
+
     #[monotonic(binds = TIMER_IRQ_0, default = true)]
     type Rp2040Mono = Rp2040Monotonic;
 
@@ -46,6 +49,7 @@ mod app {
     #[local]
     struct Local {
         led: gpio::Pin<Gpio25, PushPullOutput>,
+        display: Lcd<'static, I2CBus, Delay>,
     }
 
     #[init]
@@ -72,18 +76,18 @@ mod app {
 
         // Init LED pin
         let sio = Sio::new(ctx.device.SIO);
-        let pins = rp_pico::Pins::new(
+        let gpioa = rp_pico::Pins::new(
             ctx.device.IO_BANK0,
             ctx.device.PADS_BANK0,
             sio.gpio_bank0,
             &mut ctx.device.RESETS,
         );
-        let mut led = pins.led.into_push_pull_output();
+        let mut led = gpioa.led.into_push_pull_output();
         led.set_low().unwrap();
 
         // Init I2C pins
-        let sda_pin = pins.gpio2.into_mode::<gpio::FunctionI2C>();
-        let scl_pin = pins.gpio3.into_mode::<gpio::FunctionI2C>();
+        let sda_pin = gpioa.gpio2.into_mode::<gpio::FunctionI2C>();
+        let scl_pin = gpioa.gpio3.into_mode::<gpio::FunctionI2C>();
 
         let mut i2c = I2C::i2c1(
             ctx.device.I2C1,
@@ -93,9 +97,9 @@ mod app {
             &mut ctx.device.RESETS,
             &clocks.system_clock,
         );
-
-        // Init LCD, takes ownership of I2C
-        let mut lcd = Lcd::new(&mut i2c, Backlight::Off)
+ 
+        // Init LCD
+        let display = Lcd::new(&mut i2c, Backlight::Off)
             .address(LCD_ADDRESS)
             .cursor_on(true)
             .rows(4)
@@ -104,35 +108,23 @@ mod app {
 
         let mono = Rp2040Mono::new(ctx.device.TIMER);
 
-
-        // DEBUG
-        debug!("Starting print, backlight on");
-        _ = lcd.backlight(Backlight::On);
-
-        for _ in 1..1000 {
-            _ = lcd.return_home(&mut delay);
-            _ = delay.delay_ms(10);
-            _ = lcd.write_str("we hurrr");
-            _ = delay.delay_ms(2000);
-
-            //_ = lcd.clear();
-            _ = lcd.return_home(&mut delay);
-            _ = delay.delay_ms(10);
-            _ = lcd.write_str("we there");
-            _ = delay.delay_ms(2000);
-        }
-
-        _ = lcd.backlight(Backlight::Off);
-        debug!("Ending print, backlight off");
-        // DEBUG
-
         debug!("Spawning heartbeat");
         heartbeat::spawn().unwrap();
-        (
-            Shared {},
-            Local { led },
-            init::Monotonics(mono),
-        )
+        display::spawn().unwrap();
+
+        let shared = Shared {};
+        let local = Local {
+            led,
+            display,
+        };
+
+        (shared, local, init::Monotonics(mono))
+    }
+
+    #[task(local = [display])]
+    fn display(ctx: display::Context) {
+        debug!("Display");
+        ctx.local.display.write_str("Display");
     }
 
     #[task(local = [led])]
