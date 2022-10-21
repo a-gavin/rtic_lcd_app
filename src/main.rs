@@ -23,6 +23,7 @@ mod app {
         fugit::Duration,
     };
 
+    use core::mem::MaybeUninit;
     use cortex_m::delay::Delay;
     use embedded_hal::digital::v2::{OutputPin, ToggleableOutputPin};
     use fugit::RateExtU32; // For .kHz() conversion funcs
@@ -50,16 +51,19 @@ mod app {
     struct Local {
         led: gpio::Pin<Gpio25, PushPullOutput>,
         display: Lcd<'static, I2CBus, Delay>,
+        delay: Delay
     }
 
-    #[init]
+    #[init(local=[
+        i2c: MaybeUninit<I2CBus> = MaybeUninit::uninit()
+    ])]
     fn init(mut ctx: init::Context) -> (Shared, Local, init::Monotonics) {
         debug!("Program init");
 
         // README: ctx.device is "periphs"
         let mut watchdog = Watchdog::new(ctx.device.WATCHDOG);
 
-        // Configure the clocks - The default is to generate a 125 MHz system clock
+        // Configure the clocks, delay - The default is to generate a 125 MHz system clock
         let clocks = clocks::init_clocks_and_plls(
             XOSC_CRYSTAL_FREQ,
             ctx.device.XOSC,
@@ -89,17 +93,19 @@ mod app {
         let sda_pin = gpioa.gpio2.into_mode::<gpio::FunctionI2C>();
         let scl_pin = gpioa.gpio3.into_mode::<gpio::FunctionI2C>();
 
-        let mut i2c = I2C::i2c1(
-            ctx.device.I2C1,
-            sda_pin,
-            scl_pin,
-            100.kHz(),
-            &mut ctx.device.RESETS,
-            &clocks.system_clock,
+        let i2c: &'static mut _ = ctx.local.i2c.write(
+            I2C::i2c1(
+                ctx.device.I2C1,
+                sda_pin,
+                scl_pin,
+                100.kHz(),
+                &mut ctx.device.RESETS,
+                &clocks.system_clock
+            )
         );
  
         // Init LCD
-        let display = Lcd::new(&mut i2c, Backlight::Off)
+        let display = Lcd::new(i2c, Backlight::On)
             .address(LCD_ADDRESS)
             .cursor_on(true)
             .rows(4)
@@ -110,29 +116,49 @@ mod app {
 
         debug!("Spawning heartbeat");
         heartbeat::spawn().unwrap();
+
+        debug!("Spawning display");
         display::spawn().unwrap();
 
         let shared = Shared {};
         let local = Local {
             led,
             display,
+            delay,
         };
 
         (shared, local, init::Monotonics(mono))
     }
 
-    #[task(local = [display])]
+    #[task(local = [delay, display])]
     fn display(ctx: display::Context) {
-        debug!("Display");
-        ctx.local.display.write_str("Display");
+        let mut delay = ctx.local.delay;
+        let display = ctx.local.display;
+
+        let one_second = Duration::<u64, MONO_NUM, MONO_DENOM>::from_ticks(ONE_SEC_TICKS);
+
+        debug!("Display 1");
+        display.clear().unwrap();
+        display.return_home(&mut delay).unwrap();
+        display.write_str("Display 1").unwrap();
+
+        delay.delay_ms(1000);
+
+        debug!("Display 2");
+        display.clear().unwrap();
+        display.return_home(&mut delay).unwrap();
+        display.write_str("Display 2").unwrap();
+
+        display::spawn_after(one_second).unwrap();
     }
 
     #[task(local = [led])]
     fn heartbeat(ctx: heartbeat::Context) {
         let one_second = Duration::<u64, MONO_NUM, MONO_DENOM>::from_ticks(ONE_SEC_TICKS);
 
-        _ = ctx.local.led.toggle();
         debug!("Heartbeat");
+        _ = ctx.local.led.toggle();
+
         heartbeat::spawn_after(one_second).unwrap();
     }
 }
