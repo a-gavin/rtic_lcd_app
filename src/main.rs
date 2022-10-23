@@ -6,22 +6,19 @@
     dispatchers = [TIMER_IRQ_1]
 )]
 mod app {
-    use rp_pico::XOSC_CRYSTAL_FREQ;
+    use rp2040_monotonic::{fugit::Duration, Rp2040Monotonic};
     use rp_pico::hal::{
         clocks,
         clocks::ClockSource,
         gpio,
-        gpio::pin::bank0::{Gpio2, Gpio3, Gpio25},
+        gpio::pin::bank0::{Gpio2, Gpio25, Gpio3},
         gpio::pin::PushPullOutput,
-        I2C,
         pac,
         sio::Sio,
-        watchdog::Watchdog
+        watchdog::Watchdog,
+        I2C,
     };
-    use rp2040_monotonic::{
-        Rp2040Monotonic,
-        fugit::Duration,
-    };
+    use rp_pico::XOSC_CRYSTAL_FREQ;
 
     use core::mem::MaybeUninit;
     use cortex_m::delay::Delay;
@@ -34,13 +31,19 @@ mod app {
     use defmt_rtt as _;
     use panic_probe as _;
 
-    const MONO_NUM: u32         = 1;
-    const MONO_DENOM: u32       = 1000000;
-    const ONE_SEC_TICKS: u64    = 1000000;
+    const MONO_NUM: u32 = 1;
+    const MONO_DENOM: u32 = 1000000;
+    const ONE_SEC_TICKS: u64 = 1000000;
 
     const LCD_ADDRESS: u8 = 0x27;
 
-    type I2CBus = I2C<pac::I2C1, (gpio::Pin<Gpio2, gpio::FunctionI2C>, gpio::Pin<Gpio3, gpio::FunctionI2C>)>;
+    type I2CBus = I2C<
+        pac::I2C1,
+        (
+            gpio::Pin<Gpio2, gpio::FunctionI2C>,
+            gpio::Pin<Gpio3, gpio::FunctionI2C>,
+        ),
+    >;
 
     #[monotonic(binds = TIMER_IRQ_0, default = true)]
     type Rp2040Mono = Rp2040Monotonic;
@@ -52,7 +55,7 @@ mod app {
     struct Local {
         led: gpio::Pin<Gpio25, PushPullOutput>,
         display: Lcd<'static, I2CBus, Delay>,
-        delay: Delay
+        delay: Delay,
     }
 
     #[init(local=[
@@ -94,17 +97,15 @@ mod app {
         let sda_pin = gpioa.gpio2.into_mode::<gpio::FunctionI2C>();
         let scl_pin = gpioa.gpio3.into_mode::<gpio::FunctionI2C>();
 
-        let i2c: &'static mut _ = ctx.local.i2c.write(
-            I2C::i2c1(
-                ctx.device.I2C1,
-                sda_pin,
-                scl_pin,
-                100.kHz(),
-                &mut ctx.device.RESETS,
-                &clocks.system_clock
-            )
-        );
- 
+        let i2c: &'static mut _ = ctx.local.i2c.write(I2C::i2c1(
+            ctx.device.I2C1,
+            sda_pin,
+            scl_pin,
+            100.kHz(),
+            &mut ctx.device.RESETS,
+            &clocks.system_clock,
+        ));
+
         // Init LCD
         let display = Lcd::new(i2c, Backlight::On)
             .address(LCD_ADDRESS)
