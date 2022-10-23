@@ -1,0 +1,9 @@
+[default.general]
+chip = "RP2040"
+
+# Enable RTT by default, specifically using defmt
+[default.rtt]
+enabled = true
+channels = [
+    { up = 0, name = "defmt_rtt", format = "Defmt" },
+]
