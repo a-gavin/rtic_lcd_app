@@ -28,6 +28,7 @@ mod app {
     use embedded_hal::digital::v2::{OutputPin, ToggleableOutputPin};
     use fugit::RateExtU32; // For .kHz() conversion funcs
     use lcd_i2c::{Backlight, Lcd};
+    use ufmt::uwrite;
 
     use defmt::*;
     use defmt_rtt as _;
@@ -140,14 +141,14 @@ mod app {
         debug!("Display 1");
         display.clear().unwrap();
         display.return_home(&mut delay).unwrap();
-        display.write_str("Display 1").unwrap();
+        _ = uwrite!(*display, "Display 1");
 
         delay.delay_ms(1000);
 
         debug!("Display 2");
         display.clear().unwrap();
         display.return_home(&mut delay).unwrap();
-        display.write_str("Display 2").unwrap();
+        _ = uwrite!(*display, "Display 2");
 
         display::spawn_after(one_second).unwrap();
     }

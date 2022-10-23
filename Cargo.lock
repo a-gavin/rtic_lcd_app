@@ -596,6 +596,8 @@ dependencies = [
  "rp-pico",
  "rp2040-boot2",
  "rp2040-monotonic",
+ "ufmt",
+ "ufmt-write",
 ]
 
 [[package]]
