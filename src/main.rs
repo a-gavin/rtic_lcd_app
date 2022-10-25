@@ -24,7 +24,7 @@ mod app {
     use cortex_m::delay::Delay;
     use embedded_hal::digital::v2::{OutputPin, ToggleableOutputPin};
     use fugit::RateExtU32; // For .kHz() conversion funcs
-    use lcd_i2c::{Backlight, Lcd};
+    use lcd_2004_i2c::{Lcd, LcdUninit, RowMode};
     use ufmt::uwrite;
 
     use defmt::*;
@@ -54,8 +54,7 @@ mod app {
     #[local]
     struct Local {
         led: gpio::Pin<Gpio25, PushPullOutput>,
-        display: Lcd<'static, I2CBus, Delay>,
-        delay: Delay,
+        lcd: Lcd<'static, I2CBus, Delay>
     }
 
     #[init(local=[
@@ -80,7 +79,10 @@ mod app {
         .ok()
         .unwrap();
 
-        let mut delay: Delay = Delay::new(ctx.core.SYST, clocks.system_clock.get_freq().to_Hz());
+        let delay = Delay::new(
+            ctx.core.SYST,
+            clocks.system_clock.get_freq().to_Hz(),
+        );
 
         // Init LED pin
         let sio = Sio::new(ctx.device.SIO);
@@ -107,12 +109,11 @@ mod app {
         ));
 
         // Init LCD
-        let display = Lcd::new(i2c, Backlight::On)
-            .address(LCD_ADDRESS)
-            .cursor_on(true)
-            .rows(4)
-            .init(&mut delay)
+        let mut lcd = LcdUninit::new(i2c, LCD_ADDRESS, delay)
+            .set_num_rows(RowMode::Four)
+            .init()
             .unwrap();
+        _ = lcd.set_cursor_blink(false);
 
         let mono = Rp2040Mono::new(ctx.device.TIMER);
 
@@ -120,38 +121,29 @@ mod app {
         heartbeat::spawn().unwrap();
 
         debug!("Spawning display");
-        display::spawn().unwrap();
+        display::spawn(0).unwrap();
 
         let shared = Shared {};
         let local = Local {
             led,
-            display,
-            delay,
+            lcd
         };
 
         (shared, local, init::Monotonics(mono))
     }
 
-    #[task(local = [delay, display])]
-    fn display(ctx: display::Context) {
-        let mut delay = ctx.local.delay;
-        let display = ctx.local.display;
+    #[task(local = [lcd])]
+    fn display(ctx: display::Context, iter: u32) {
+        let lcd = ctx.local.lcd;
 
-        let one_second = Duration::<u64, MONO_NUM, MONO_DENOM>::from_ticks(ONE_SEC_TICKS);
+        let one_fifth_second = Duration::<u64, MONO_NUM, MONO_DENOM>::from_ticks(ONE_SEC_TICKS/5);
 
-        debug!("Display 1");
-        display.clear().unwrap();
-        display.return_home(&mut delay).unwrap();
-        _ = uwrite!(*display, "Display 1");
+        debug!("Display {}", iter);
+        lcd.clear().unwrap();
+        lcd.return_home().unwrap();
+        _ = uwrite!(lcd, "Display {}", iter);
 
-        delay.delay_ms(1000);
-
-        debug!("Display 2");
-        display.clear().unwrap();
-        display.return_home(&mut delay).unwrap();
-        _ = uwrite!(*display, "Display 2");
-
-        display::spawn_after(one_second).unwrap();
+        display::spawn_after(one_fifth_second, iter+1).unwrap();
     }
 
     #[task(local = [led])]
