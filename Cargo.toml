@@ -12,9 +12,13 @@ fugit = "0.3"
 rp-pico = "0.5.0"
 rp2040-boot2 = { version = "0.2.1" }
 rp2040-monotonic = "1.1"
+
 lcd-2004-i2c = { git = "https://github.com/a-gavin/lcd-2004-i2c" }
 ufmt = "0.1.0"
 ufmt-write = "0.1.0"
+
+w5500 = "0.4.0"
+embedded-nal = "0.6.0"
 
 defmt = "0.3"
 defmt-rtt = "0.3"

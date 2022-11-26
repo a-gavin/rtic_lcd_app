@@ -210,6 +210,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "derive-try-from-primitive"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "302ccf094df1151173bb6f5a2282fcd2f45accd5eae1bdf82dcbfefbc501ad5c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "either"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -223,6 +234,17 @@ checksum = "35949884794ad573cf46071e41c9b60efb0cb311e3ca01f7af807af1debc66ff"
 dependencies = [
  "nb 0.1.3",
  "void",
+]
+
+[[package]]
+name = "embedded-nal"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db9efecb57ab54fa918730f2874d7d37647169c50fa1357fecb81abee840b113"
+dependencies = [
+ "heapless",
+ "nb 1.0.0",
+ "no-std-net",
 ]
 
 [[package]]
@@ -336,6 +358,12 @@ name = "nb"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "546c37ac5d9e56f55e73b677106873d9d9f5190605e41a856503623648488cae"
+
+[[package]]
+name = "no-std-net"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bcece43b12349917e096cddfa66107277f123e6c96a5aea78711dc601a47152"
 
 [[package]]
 name = "num_enum"
@@ -591,6 +619,7 @@ dependencies = [
  "defmt",
  "defmt-rtt",
  "embedded-hal",
+ "embedded-nal",
  "fugit",
  "lcd-2004-i2c",
  "panic-probe",
@@ -599,6 +628,7 @@ dependencies = [
  "rp2040-monotonic",
  "ufmt",
  "ufmt-write",
+ "w5500",
 ]
 
 [[package]]
@@ -738,4 +768,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ee8f19f9d74293faf70901bc20ad067dc1ad390d2cbf1e3f75f721ffee908b6"
 dependencies = [
  "vcell",
+]
+
+[[package]]
+name = "w5500"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6872a9784fd7c84387b0fde6716b5987a9f2d4d62fac03324f7ef8a532f3cf68"
+dependencies = [
+ "bit_field",
+ "byteorder",
+ "derive-try-from-primitive",
+ "embedded-hal",
+ "embedded-nal",
+ "nb 1.0.0",
 ]
