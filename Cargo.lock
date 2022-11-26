@@ -621,6 +621,7 @@ dependencies = [
  "embedded-hal",
  "embedded-nal",
  "fugit",
+ "heapless",
  "lcd-2004-i2c",
  "panic-probe",
  "rp-pico",

@@ -26,14 +26,15 @@ mod app {
     use cortex_m::delay::Delay;
     use embedded_hal::digital::v2::{OutputPin, ToggleableOutputPin};
 
+    use core::str::from_utf8;
+    use heapless;
     use lcd_2004_i2c::{Lcd, LcdUninit, RowMode};
-    use ufmt::uwrite;
 
     use embedded_nal::TcpClientStack;
     use embedded_nal::{IpAddr, Ipv4Addr, SocketAddr};
     use w5500::{bus::FourWire, tcp::TcpSocket, Device, MacAddress, UninitializedDevice};
 
-    use defmt::*;
+    use defmt::{debug, warn};
     use defmt_rtt as _;
     use panic_probe as _;
 
@@ -43,14 +44,10 @@ mod app {
     type RpiDuration = Duration<u64, MONO_NUM, MONO_DENOM>;
 
     const LCD_ADDRESS: u8 = 0x27;
-    type I2CBus = I2C<
-        pac::I2C1,
-        (
-            Pin<Gpio2, gpio::FunctionI2C>,
-            Pin<Gpio3, gpio::FunctionI2C>,
-        ),
-    >;
+    type I2CBus = I2C<pac::I2C1, (Pin<Gpio2, gpio::FunctionI2C>, Pin<Gpio3, gpio::FunctionI2C>)>;
 
+    const NETWORK_RX_QUEUE_SIZE: usize = 128;
+    const STR_BUF_SIZE: usize = 20;
     type EthDevice =
         Device<FourWire<Spi<Enabled, pac::SPI1, 8>, Pin<Gpio13, PushPullOutput>>, w5500::Manual>;
 
@@ -67,14 +64,19 @@ mod app {
         eth: EthDevice,
         socket: TcpSocket,
         sock_addr: SocketAddr,
+        str_buf: &'static mut heapless::Vec<u8, STR_BUF_SIZE>,
+        network_rx_producer: heapless::spsc::Producer<'static, u8, NETWORK_RX_QUEUE_SIZE>,
+        network_rx_consumer: heapless::spsc::Consumer<'static, u8, NETWORK_RX_QUEUE_SIZE>,
     }
 
     #[init(local=[
-        i2c: MaybeUninit<I2CBus> = MaybeUninit::uninit()
+        i2c: MaybeUninit<I2CBus> = MaybeUninit::uninit(),
+        _str_buf: heapless::Vec<u8, STR_BUF_SIZE> = heapless::Vec::new(),
+        network_rx_queue: heapless::spsc::Queue<u8, NETWORK_RX_QUEUE_SIZE> = heapless::spsc::Queue::new(),
     ])]
-    fn init(ctx: init::Context) -> (Shared, Local, init::Monotonics) {
+    fn init(c: init::Context) -> (Shared, Local, init::Monotonics) {
         debug!("Program init");
-        let mut periphs = ctx.device;
+        let mut periphs = c.device;
         let mut watchdog = Watchdog::new(periphs.WATCHDOG);
 
         // The default is to generate a 125 MHz system clock
@@ -102,57 +104,71 @@ mod app {
         let mut led = gpio.led.into_push_pull_output();
         led.set_low().unwrap();
 
-        // Init I2C pins for LCD
-        info!("LCD init");
-        let sda_pin = gpio.gpio2.into_mode::<gpio::FunctionI2C>();
-        let scl_pin = gpio.gpio3.into_mode::<gpio::FunctionI2C>();
+        let lcd = {
+            // Init I2C pins for LCD
+            debug!("LCD init");
+            let sda_pin = gpio.gpio2.into_mode::<gpio::FunctionI2C>();
+            let scl_pin = gpio.gpio3.into_mode::<gpio::FunctionI2C>();
 
-        let i2c: &'static mut _ = ctx.local.i2c.write(I2C::i2c1(
-            periphs.I2C1,
-            sda_pin,
-            scl_pin,
-            100.kHz(),
-            &mut periphs.RESETS,
-            &clocks.system_clock,
-        ));
+            let i2c: &'static mut _ = c.local.i2c.write(I2C::i2c1(
+                periphs.I2C1,
+                sda_pin,
+                scl_pin,
+                10.kHz(),
+                &mut periphs.RESETS,
+                &clocks.system_clock,
+            ));
 
-        // Init LCD
-        let delay = Delay::new(ctx.core.SYST, clocks.system_clock.get_freq().to_Hz());
-        let mut lcd = LcdUninit::new(i2c, LCD_ADDRESS, delay)
-            .set_num_rows(RowMode::Four)
-            .init()
-            .unwrap();
-        _ = lcd.set_cursor_blink(false);
+            // Init LCD
+            let delay = Delay::new(c.core.SYST, clocks.system_clock.get_freq().to_Hz());
+            let mut lcd = LcdUninit::new(i2c, LCD_ADDRESS, delay)
+                .set_num_rows(RowMode::Four)
+                .init()
+                .unwrap();
+            _ = lcd.set_cursor_blink(false);
+            lcd
+        };
 
-        // Init SPI (SPI bank 1, SPI init takes care of rest)
-        info!("Network init");
-        let _rx = gpio.gpio12.into_mode::<gpio::FunctionSpi>();
-        let _sck = gpio.gpio14.into_mode::<gpio::FunctionSpi>();
-        let _tx = gpio.gpio15.into_mode::<gpio::FunctionSpi>();
+        let (eth, socket, sock_addr) = {
+            // Init SPI (SPI bank 1, SPI init takes care of rest)
+            debug!("Network init");
+            let _rx = gpio.gpio12.into_mode::<gpio::FunctionSpi>();
+            let _sck = gpio.gpio14.into_mode::<gpio::FunctionSpi>();
+            let _tx = gpio.gpio15.into_mode::<gpio::FunctionSpi>();
 
-        let mut cs = gpio.gpio13.into_push_pull_output();
-        cs.set_high().unwrap();
+            let mut cs = gpio.gpio13.into_push_pull_output();
+            cs.set_high().unwrap();
 
-        let spi = spi::Spi::<_, _, 8>::new(periphs.SPI1);
-        let spi = spi.init(
-            &mut periphs.RESETS,
-            clocks.peripheral_clock.freq(),
-            1_000_000u32.Hz(),
-            &embedded_hal::spi::MODE_0,
-        );
+            let spi = spi::Spi::<_, _, 8>::new(periphs.SPI1);
+            let spi = spi.init(
+                &mut periphs.RESETS,
+                clocks.peripheral_clock.freq(),
+                1_000_000u32.Hz(),
+                &embedded_hal::spi::MODE_0,
+            );
 
-        // Init w5500 itself and respective socket
-        let mut eth = UninitializedDevice::new(FourWire::new(spi, cs))
-            .initialize_manual(
-                MacAddress::new(0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE),
-                Ipv4Addr::new(169, 254, 112, 188),
-                w5500::Mode::default(),
-            )
-            .unwrap();
+            // Init w5500 itself and respective socket
+            let mut eth = UninitializedDevice::new(FourWire::new(spi, cs))
+                .initialize_manual(
+                    MacAddress::new(0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE),
+                    Ipv4Addr::new(169, 254, 112, 188),
+                    w5500::Mode::default(),
+                )
+                .unwrap();
 
-        let mut socket = eth.socket().unwrap();
-        let sock_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(169, 254, 112, 189)), 14000);
-        eth.connect(&mut socket, sock_addr).unwrap();
+            let mut socket = eth.socket().unwrap();
+            let sock_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(169, 254, 112, 189)), 14000);
+            eth.connect(&mut socket, sock_addr).unwrap();
+
+            if !eth.is_connected(&socket).unwrap() {
+                panic!("Ethernet not connected");
+            }
+
+            (eth, socket, sock_addr)
+        };
+
+        let (network_rx_producer, network_rx_consumer) = c.local.network_rx_queue.split();
+        let str_buf = c.local._str_buf;
 
         let mono = Rp2040Mono::new(periphs.TIMER);
 
@@ -163,7 +179,7 @@ mod app {
         network::spawn().unwrap();
 
         debug!("Spawning display task");
-        display::spawn(0).unwrap();
+        display::spawn().unwrap();
 
         let shared = Shared {};
         let local = Local {
@@ -172,49 +188,81 @@ mod app {
             eth,
             socket,
             sock_addr,
+            str_buf,
+            network_rx_producer,
+            network_rx_consumer,
         };
 
         (shared, local, init::Monotonics(mono))
     }
 
-    #[task(local = [lcd])]
-    fn display(ctx: display::Context, iter: u32) {
-        debug!("Display {}", iter);
-        let lcd = ctx.local.lcd;
+    // Method is to accrue bytes into a u8 buf and then convert to
+    // str buf and write out all at once
+    #[task(local = [lcd, network_rx_consumer, str_buf])]
+    fn display(c: display::Context) {
+        // Only do work when queue has data
+        if c.local.network_rx_consumer.ready() {
+            // Reset screen and buffer
+            c.local.lcd.clear().unwrap();
+            c.local.lcd.return_home().unwrap();
 
-        lcd.clear().unwrap();
-        lcd.return_home().unwrap();
-        _ = uwrite!(lcd, "Display {}", iter);
+            c.local.str_buf.clear();
+            let capacity = c.local.str_buf.capacity();
 
-        // Respawn task in a fifth of a second
-        let one_fifth_second = Duration::<u64, MONO_NUM, MONO_DENOM>::from_ticks(ONE_SEC_TICKS / 5);
-        display::spawn_after(one_fifth_second, iter + 1).unwrap();
-    }
-
-    #[task(local = [eth, socket, sock_addr])]
-    fn network(ctx: network::Context) {
-        debug!("Network");
-        let eth = ctx.local.eth;
-        let mut socket = ctx.local.socket;
-
-        if eth.is_connected(&socket).unwrap() {
-            debug!("Sending");
-            let send_buf = [0x00, 0xFF, 0x00, 0xFF];
-            eth.send(&mut socket, &send_buf).unwrap();
-            debug!("Sent");
+            // While data to dequeue and space in buffer, append new data to buffer
+            while c.local.network_rx_consumer.ready() && c.local.str_buf.len() < capacity {
+                if let Some(data) = c.local.network_rx_consumer.dequeue() {
+                    match c.local.str_buf.push(data) {
+                        Ok(_) => {},
+                        _ => panic!("Buffer has space, but couldn't store more"),
+                    }
+                };
+            }
+            
+            // Finally write data out
+            if let Ok(str_buf) = from_utf8(c.local.str_buf) {
+                debug!("{}", str_buf);
+                c.local.lcd.write_str(str_buf).unwrap();
+            } else {
+                warn!("Unable to convert form u8 to str");
+            }
         }
 
-        // Respawn task in a half second
-        let three_second = RpiDuration::from_ticks(3 * ONE_SEC_TICKS);
-        network::spawn_after(three_second).unwrap();
+        // Respawn task every half second, regardless of queue state
+        let half_second = Duration::<u64, MONO_NUM, MONO_DENOM>::from_ticks(ONE_SEC_TICKS / 2);
+        display::spawn_after(half_second).unwrap();
+    }
+
+    #[task(local = [eth, socket, sock_addr, network_rx_producer])]
+    fn network(mut c: network::Context) {
+        let mut recv_buf = [0; 10];
+
+        let num_bytes = c.local.eth.receive(&mut c.local.socket, &mut recv_buf).unwrap();
+
+        for ix in 0..num_bytes {
+            let byte = recv_buf[ix];
+
+            if c.local.network_rx_producer.ready() {
+                match c.local.network_rx_producer.enqueue(byte) {
+                    Ok(_) => {},
+                    Err(_) => panic!("Couldn't enqueue data"),
+                };
+            } else {
+                warn!("Producer queue not ready");
+            }
+        }
+
+        // Respawn task every fifth of a second
+        let one_fifth_second = RpiDuration::from_ticks(ONE_SEC_TICKS / 10);
+        network::spawn_after(one_fifth_second).unwrap();
     }
 
     #[task(local = [led])]
-    fn heartbeat(ctx: heartbeat::Context) {
+    fn heartbeat(c: heartbeat::Context) {
         debug!("Heartbeat");
-        _ = ctx.local.led.toggle();
+        _ = c.local.led.toggle();
 
-        // Respawn task in a second
+        // Respawn task every second
         let one_second = RpiDuration::from_ticks(ONE_SEC_TICKS);
         heartbeat::spawn_after(one_second).unwrap();
     }
